@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/preview.png" alt="关系 K 线 · Relationship Candlestick" width="900">
+</p>
+
 > 把两个人的聊天记录，压缩成一张 K 线走势图。
 
 **像读股票 K 线一样，读一段关系的变化。**
