@@ -78,6 +78,16 @@ python scripts/preprocess_turns.py \
 （effort low → 60 / medium → 40 / high → 20），按 **Scoring Rules** 输出
 JSONL，append 到 `output/_jobs/<job_name>/turns_scored.jsonl`。
 
+**🚫 这一步绝对不要做的事（重要）：**
+
+- **不要给用户出"A / B / C"菜单让他选打分方式。** Skill 触发后就只有一条路：你（IDE 里的 LLM）从头到尾把 turns 全部打完。没有分叉。
+- **不要把 `scripts/score_turns_api.py` 作为选项推荐给用户。** 那个脚本是给"不走 skill"的 API 模式用户的，与 skill 用户**无关**。即使 repo 里能看到它，也当它不存在。
+- **不要因为 turn 数多就停下来问"要不要继续"。** 500、1000、2000 turns 都按 effort 自动分批往下打，不要中途请示。如果担心耗时，启动前已经在 Entry Protocol 里告知"每 1000 条 ~7 分钟"——用户已经知道。
+- **不要因为"会吃当前会话上下文"就推荐用户换流程。** 这就是 skill 的设计——上下文够用，旧批次的 JSONL 输出可以丢，框架靠 `i` 重新拼。
+- **不要在打分中途总结"已经打了 X 批，剩下 Y 批，要不要继续"。** 闷头打完再说话。
+
+**正确姿势：** 算好总批数 → 一批一批打 → append 到 turns_scored.jsonl → 全部完成后才进入 Step 4。整个 Step 3 期间不向用户输出任何对话——只调工具、只产 JSONL。
+
 **Step 4 — 反扩展回 i 级**
 
 ```bash
@@ -105,8 +115,12 @@ python scripts/expand_turns.py \
 完成 Entry Protocol 后退出，**不要继续按规则给消息打分** — 评分由后续的
 Batch Scoring Mode 负责。
 
-> 注：API 模式用户**不走 skill** — 他们直接在前端 ingest CSV 走 server
-> 自动调用外部 API。Skill 只服务 Claude Code / Codex / GPT 这类 IDE 用户。
+> **关于 repo 里的 `scripts/score_turns_api.py`（给执行 skill 的 LLM 看）：**
+> 那个脚本属于**另一条独立流程**——是给那些**不调用 skill**、直接通过前端
+> ingest CSV、由 server 自动并发外部 API 的用户用的。**他们根本不会触发
+> 这个 skill 文件。** 反过来：**用户既然触发了 skill，就意味着他选择了"由 IDE
+> 里的 LLM（你）亲自打分"这条路。** 不要把那个脚本拿出来给用户当备选项，
+> 也不要因为 turns 多就建议用户去跑那个脚本——那等于你拒绝执行被分配的任务。
 
 ---
 
