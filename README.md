@@ -48,6 +48,25 @@
 
 ---
 
+## 准备工作：先导出你的微信聊天记录
+
+整个工具的输入是**两个人的聊天导出文件**——所以第一步是用一个微信数据导出工具，把你和某个人的对话导成 CSV（推荐）/ JSON / TXT。
+
+推荐两个开源导出工具（任选其一）：
+
+| 工具 | Stars | 技术栈 | 描述 |
+|---|---|---|---|
+| [**WeFlow**](https://github.com/hicccc77/WeFlow) | 9.1k | TypeScript / Electron | 本地微信聊天记录导出 + 年度报告应用，桌面 GUI |
+| [**WeChatDataAnalysis**](https://github.com/LifeArchiveProject/WeChatDataAnalysis) | 1.1k | Python | 微信 4.x 数据解密、高仿微信界面，支持导出聊天记录、朋友圈、年度总结等 |
+
+> 其他可用工具：pywxdump、Memotrace 等。**任何能产出"两个人对话表"的工具都行**——只要列里有发送者、时间戳、消息内容三样。
+
+导出完拿到一个聊天文件就行，后面的所有步骤都基于这个文件。
+
+**不是微信也能用**：本工具只看"两个发送者轮流发消息"的结构，所以 iMessage / Telegram / Discord DM / Instagram DM 等只要能导出成相同格式，一样能跑（详见下面 [输入格式](#输入格式)）。
+
+---
+
 ## 一键启动
 
 > 前提：你电脑上有 **Python 3.9+**。
