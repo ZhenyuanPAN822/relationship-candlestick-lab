@@ -1,0 +1,31 @@
+# 防止把任何聊天数据 / 评分结果 / 缓存提交到仓库
+output/
+.playwright-mcp/
+.agents/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# 系统 / 编辑器
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# 环境 / 密钥
+.env
+.env.*
+*.bak
+*.bak_*
+
+# Python venv
+venv/
+.venv/
+env/
+ENV/
+
+# 构建产物
+build/
+dist/
+*.egg-info/

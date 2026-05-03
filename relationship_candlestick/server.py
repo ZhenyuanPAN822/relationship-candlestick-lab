@@ -1,0 +1,337 @@
+"""FastAPI backend for the local web frontend.
+
+Endpoints
+  POST /api/jobs                — start a new analysis job
+  GET  /api/jobs/{id}           — job status + progress
+  GET  /api/jobs/{id}/timeframes — list of computed timeframes
+  GET  /api/jobs/{id}/ohlc?tf=  — OHLC data for chart
+  GET  /api/jobs/{id}/events    — event markers (for tooltips)
+  GET  /                         — serves the frontend SPA
+
+Designed for single-user local use. In-memory job registry. Background
+thread scores via Anthropic API and streams progress.
+"""
+from __future__ import annotations
+
+import threading
+import traceback
+import uuid
+from pathlib import Path
+from typing import Dict, Optional
+
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from .ai_scorer import load_scored_jsonl, write_messages_jsonl
+from .indicators import compute as compute_indicators
+from .ohlc import aggregate_ohlc
+from .parser import parse
+from .utils import ALL_TIMEFRAMES, load_config
+
+
+PKG_ROOT = Path(__file__).resolve().parent.parent
+FRONTEND_DIR = PKG_ROOT / "frontend"
+WORK_DIR = PKG_ROOT / "output" / "_jobs"
+WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ─── job registry ─────────────────────────────────────────────────
+
+class Job:
+    def __init__(self, jid: str):
+        self.id = jid
+        self.status = "created"        # created | running | done | failed
+        self.stage = "parsing"          # parsing | scoring | aggregating | done
+        self.progress = 0.0             # 0..1
+        self.scored = 0
+        self.total = 0
+        self.error: Optional[str] = None
+        self.work_dir = WORK_DIR / jid
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        self.scored_path = self.work_dir / "scored.jsonl"
+        self.ohlc_by_tf: Dict[str, pd.DataFrame] = {}
+        self.events_df: Optional[pd.DataFrame] = None
+        self.params: dict = {}
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "status": self.status,
+            "stage": self.stage,
+            "progress": round(self.progress, 4),
+            "scored": self.scored,
+            "total": self.total,
+            "error": self.error,
+            "timeframes": list(self.ohlc_by_tf.keys()),
+            "params": self.params,
+        }
+
+
+JOBS: Dict[str, Job] = {}
+
+
+# ─── request models ───────────────────────────────────────────────
+
+class JobRequest(BaseModel):
+    chat_path: str = Field(..., description="Absolute path to chat file (CSV/JSON/TXT)")
+    fmt: Optional[str] = Field(None, description="csv|json|txt; auto-detect if omitted")
+    scorer: str = Field("api", description="api or skill")
+    # Multi-provider: provider (anthropic/openai/deepseek/...) + api_format
+    # ("anthropic" or "openai") + base_url + model. base_url is optional for
+    # Anthropic (SDK uses its own); required for openai-compat providers.
+    provider:   str = Field("anthropic")
+    api_format: str = Field("anthropic")
+    model:      str = Field("claude-sonnet-4-6")
+    base_url:   Optional[str] = None
+    api_key:    Optional[str] = None
+    initial_index: float = 50.0
+    batch_size: int = 50
+    context_window: int = 30        # kept for API back-compat; new pipeline ignores
+    calendar_mode: str = "active-only"
+    concurrency: int = 5
+    gap_min:     int = 10
+
+
+# ─── job worker ───────────────────────────────────────────────────
+
+def _run_job(job: Job, req: JobRequest):
+    try:
+        config = load_config(None)
+        job.stage = "parsing"
+        job.status = "running"
+
+        # 1) parse
+        raw = req.chat_path.strip().strip('"').strip("'")
+        chat_path = Path(raw)
+        if not chat_path.exists():
+            raise FileNotFoundError(f"chat_path not found: {chat_path}")
+        if chat_path.is_dir():
+            # auto-find a single .csv / .json / .txt inside
+            cands = sorted(
+                [p for p in chat_path.iterdir()
+                 if p.suffix.lower() in {".csv", ".json", ".txt"}]
+            )
+            if not cands:
+                raise FileNotFoundError(
+                    f"{chat_path} 是目录，但里面没找到 .csv / .json / .txt 文件"
+                )
+            if len(cands) > 1:
+                names = ", ".join(p.name for p in cands)
+                raise FileNotFoundError(
+                    f"{chat_path} 里有多个候选文件 [{names}]，请填写完整文件路径"
+                )
+            chat_path = cands[0]
+        messages_df = parse(chat_path, req.fmt)
+        job.total = len(messages_df)
+        write_messages_jsonl(messages_df, job.work_dir / "messages.jsonl")
+
+        # 2) score (skill mode just stops here, user goes to /rcl-score in IDE)
+        if req.scorer == "skill":
+            job.stage = "awaiting-skill"
+            job.status = "done"
+            return
+
+        # API mode: run the SAME turn-based pipeline the Skill path runs.
+        # preprocess (剔单字+聚合 turns) → async LLM scoring → expand → aggregate.
+        from .pipeline import run_full_pipeline
+
+        def _cb(stage: str, done: int, total: int):
+            job.stage    = stage
+            job.scored   = done
+            job.total    = total
+            job.progress = (done / total) if total else 0.0
+
+        api_key = req.api_key
+        if not api_key:
+            raise RuntimeError("API key is required for API mode")
+        scored_path = run_full_pipeline(
+            messages_jsonl=job.work_dir / "messages.jsonl",
+            out_dir=job.work_dir,
+            api_format=req.api_format or "anthropic",
+            model=req.model,
+            api_key=api_key,
+            base_url=req.base_url,
+            batch_size=req.batch_size,
+            concurrency=req.concurrency,
+            gap_min=req.gap_min,
+            progress_cb=_cb,
+        )
+
+        # 3) load enriched scored.jsonl (auto-joins messages text) + aggregate
+        job.stage = "aggregating"
+        scored_df = load_scored_jsonl(
+            scored_path,
+            messages_path=job.work_dir / "messages.jsonl",
+            initial_index=req.initial_index,
+        )
+        job.events_df = scored_df
+        for tf in ALL_TIMEFRAMES:
+            job.ohlc_by_tf[tf] = aggregate_ohlc(
+                scored_df, tf, config,
+                req.calendar_mode, req.initial_index,
+            )
+
+        job.stage = "done"
+        job.status = "done"
+        job.progress = 1.0
+    except Exception as e:
+        job.status = "failed"
+        job.error = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+
+
+# ─── ingest helper for skill workflow ────────────────────────────
+
+def _aggregate_from_scored(job: Job, scored_path: Path, calendar_mode: str, initial_index: float):
+    config = load_config(None)
+    scored_df = load_scored_jsonl(scored_path)
+    job.events_df = scored_df
+    job.total = len(scored_df)
+    job.scored = len(scored_df)
+    for tf in ALL_TIMEFRAMES:
+        job.ohlc_by_tf[tf] = aggregate_ohlc(
+            scored_df, tf, config, calendar_mode, initial_index
+        )
+    job.stage = "done"
+    job.status = "done"
+    job.progress = 1.0
+
+
+# ─── app ──────────────────────────────────────────────────────────
+
+app = FastAPI(title="Relationship Candlestick Lab")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
+)
+
+
+@app.post("/api/jobs")
+def create_job(req: JobRequest):
+    jid = uuid.uuid4().hex[:12]
+    job = Job(jid)
+    job.params = req.model_dump(exclude={"api_key"})
+    JOBS[jid] = job
+    th = threading.Thread(target=_run_job, args=(job, req), daemon=True)
+    th.start()
+    return job.to_dict()
+
+
+@app.get("/api/jobs/{jid}")
+def get_job(jid: str):
+    if jid not in JOBS:
+        raise HTTPException(404, "job not found")
+    return JOBS[jid].to_dict()
+
+
+class IngestRequest(BaseModel):
+    scored_path: str
+    calendar_mode: str = "active-only"
+    initial_index: float = 50.0
+
+
+@app.post("/api/ingest")
+def ingest_scored(req: IngestRequest):
+    """For skill mode: user provides path to a scored.jsonl produced externally."""
+    p = Path(req.scored_path)
+    if not p.exists():
+        raise HTTPException(400, f"scored file not found: {p}")
+    jid = uuid.uuid4().hex[:12]
+    job = Job(jid)
+    job.params = {"scorer": "ingest", "scored_path": str(p)}
+    JOBS[jid] = job
+    try:
+        _aggregate_from_scored(job, p, req.calendar_mode, req.initial_index)
+    except Exception as e:
+        job.status = "failed"
+        job.error = f"{type(e).__name__}: {e}"
+    return job.to_dict()
+
+
+@app.get("/api/jobs/{jid}/ohlc")
+def get_ohlc(jid: str, tf: str = Query(..., description="timeframe e.g. 1d")):
+    job = JOBS.get(jid)
+    if not job:
+        raise HTTPException(404)
+    if tf not in job.ohlc_by_tf:
+        raise HTTPException(404, f"timeframe {tf} not computed")
+    df = job.ohlc_by_tf[tf]
+    out = []
+    for _, r in df.iterrows():
+        # lightweight-charts expects { time: unixSeconds, open, high, low, close, value (volume) }
+        out.append({
+            "time": int(pd.Timestamp(r["period_start"]).timestamp()),
+            "open": float(r["open"]),
+            "high": float(r["high"]),
+            "low":  float(r["low"]),
+            "close":float(r["close"]),
+            "volume": float(r["volume"]),
+            "msg_count": int(r["message_count"]),
+            "event_count": int(r["event_count"]),
+            "direction": r["direction"],
+            "change":     float(r["change"])     if "change"     in r else 0.0,
+            "change_pct": float(r["change_pct"]) if "change_pct" in r else 0.0,
+            # Per-bar attribution for the hover tooltip.
+            "top_dims":   list(r["top_dims"])    if "top_dims"   in r and isinstance(r["top_dims"],   list) else [],
+            "top_events": list(r["top_events"])  if "top_events" in r and isinstance(r["top_events"], list) else [],
+        })
+    return out
+
+
+@app.get("/api/jobs/{jid}/events")
+def get_events(jid: str):
+    job = JOBS.get(jid)
+    if not job or job.events_df is None:
+        raise HTTPException(404)
+    df = job.events_df
+    out = []
+    for _, r in df.iterrows():
+        out.append({
+            "time": int(pd.Timestamp(r["timestamp"]).timestamp()),
+            "sender": r["sender"],
+            "message": str(r["message"])[:200],
+            "tags": str(r["event_tags"]),
+            "index": float(r["relationship_index"]),
+            "rationale": str(r.get("rationale", "")),
+        })
+    return out
+
+
+@app.get("/api/jobs/{jid}/indicators")
+def get_indicators(
+    jid: str,
+    tf: str = Query(..., description="timeframe e.g. 1d"),
+    spec: str = Query(
+        "",
+        description=(
+            "compact spec, e.g. 'ma:5,10,20;bb:20,2;macd;rsi:14;kdj'. "
+            "Empty returns no indicators."
+        ),
+    ),
+):
+    job = JOBS.get(jid)
+    if not job:
+        raise HTTPException(404)
+    if tf not in job.ohlc_by_tf:
+        raise HTTPException(404, f"timeframe {tf} not computed")
+    df = job.ohlc_by_tf[tf]
+    return compute_indicators(df, spec)
+
+
+# ─── static frontend ──────────────────────────────────────────────
+
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+    @app.get("/")
+    def root():
+        return FileResponse(str(FRONTEND_DIR / "index.html"))
+
+
+def serve(host: str = "127.0.0.1", port: int = 7000):
+    import uvicorn
+    uvicorn.run(app, host=host, port=port, log_level="info")
