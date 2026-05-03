@@ -1,6 +1,10 @@
 <p align="center">
-  <img src="docs/preview.png" alt="关系 K 线 · Relationship Candlestick" width="900">
+  <img src="docs/preview.png" alt="聊天关系K线 · Relationship Candlestick Lab" width="900">
 </p>
+
+<h1 align="center">聊天关系K线 · Relationship Candlestick Lab</h1>
+
+<p align="center"><i>把聊天记录画成K线图，看你和TA的关系曲线</i></p>
 
 > 把两个人的聊天记录，压缩成一张 K 线走势图。
 
