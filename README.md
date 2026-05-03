@@ -24,6 +24,12 @@
 所以，一根关系 K 线不是模型主观生成的，而是由消息级指数路径自然聚合出来的。
 上影线代表关系曾经冲高但回落，下影线代表关系曾经下探但被修复。
 
+<p align="center">
+  <img src="docs/pipeline.png" alt="工作原理：聊天记录 → 逐条评分 → 聚合成 K 线" width="780">
+</p>
+
+<p align="center"><i>↑ 不是直接判断"喜不喜欢"，而是先看每条消息让关系升温还是降温，再按时间聚合成 OHLC K 线</i></p>
+
 ---
 
 ## 它能给你什么
@@ -88,6 +94,12 @@ python -m relationship_candlestick.cli serve
 ---
 
 ## 两条工作流
+
+<p align="center">
+  <img src="docs/two-modes.png" alt="Skill 模式 vs API 模式：一个偏本地隐私，一个偏网页直连" width="780">
+</p>
+
+<p align="center"><i>↑ 一个偏本地隐私，一个偏网页直连——按场景选，不用纠结</i></p>
 
 ### 路线一 · 本地分析（Skills 模式）
 
