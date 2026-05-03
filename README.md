@@ -34,19 +34,21 @@
 
 ## 一键启动
 
-下载本仓库后，按你的系统**双击**对应文件就行：
-
-| 系统 | 双击 | 它会做什么 |
-|---|---|---|
-| **Windows** | `start.bat` | 找到 Python → 自动装缺的依赖 → 启动后端 → 自动开浏览器 |
-| **macOS / Linux** | `start.sh` | 同上（首次需 `chmod +x start.sh`） |
-| 任何系统 | 命令行跑 `python start.py` | 同上 |
-
 > 前提：你电脑上有 **Python 3.9+**。
-> 没有的话去 [python.org/downloads](https://www.python.org/downloads/) 装一个，
+> 没有的话去 [python.org/downloads](https://www.python.org/downloads/) 装一个。
 > Windows 安装时记得勾上 *Add Python to PATH*。
 
-启动后浏览器自动打开 `http://127.0.0.1:7000`，会让你二选一：
+下载本仓库后，**在仓库目录下打开终端**（Windows: PowerShell / cmd；macOS: Terminal），跑：
+
+```bash
+python start.py
+```
+
+`start.py` 会自动：检查依赖 → 缺什么就提示装什么 → 启动本地后端 → 帮你打开浏览器到 `http://127.0.0.1:7000`。
+
+> macOS / Linux 上如果默认是 Python 2，请用 `python3 start.py`。
+
+打开网页后，会让你二选一：
 
 | | 适合谁 |
 |---|---|
@@ -55,7 +57,7 @@
 
 ---
 
-### 如果你想手动来
+### 如果你想手动控制每一步
 
 也行，传统三步：
 
@@ -85,7 +87,7 @@ python -m relationship_candlestick.cli serve
 2. 在 IDE 中输入 `/rcl-score`
 3. Skill 会引导你粘聊天文件路径，然后自动跑：拆单字 → 聚合连发 → 逐条评分 → 反扩展回消息级
 4. 跑完会给你一份本机评分文件的路径
-5. **双击 `start.bat`（Windows）或 `start.sh`（macOS / Linux）启动网页**
+5. **在仓库目录下跑 `python start.py` 启动网页**
 6. 浏览器自动打开后选「导入本地文件」，把刚才的路径粘进去
 
 > 推荐：Claude Sonnet 4.6 + effort `low`，或 GPT-5 系列 + effort `low`。
@@ -95,7 +97,7 @@ python -m relationship_candlestick.cli serve
 
 让网页端直接调外部模型 API 跑。
 
-1. **双击 `start.bat`（Windows）或 `start.sh`（macOS / Linux）启动网页**
+1. **在仓库目录下跑 `python start.py` 启动网页**
 2. 浏览器自动打开 `http://127.0.0.1:7000`，选「在线分析」
 3. 选厂商 + 模型，填 API Key，给聊天文件路径
 4. 进度跑完自动跳到 K 线页
