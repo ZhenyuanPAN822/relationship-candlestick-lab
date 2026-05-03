@@ -56,7 +56,7 @@
 也行，传统三步：
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/ZhenyuanPAN822/relationship-candlestick-lab.git
 cd relationship-candlestick-lab
 pip install -r requirements.txt
 
