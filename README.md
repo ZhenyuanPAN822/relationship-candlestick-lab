@@ -10,6 +10,8 @@
 
 **像读股票 K 线一样，读一段关系的变化。**
 
+> 小提示：导入数据时**强烈推荐使用 CSV**，尽量不要用 JSON——多数微信导出工具的 JSON 是给 LLM 微调用的格式，没有时间戳，跑不出 K 线。详见 [输入格式](#输入格式)。
+
 系统先对聊天记录里的**每一条消息**进行量化：
 一条冷淡回复会让关系价格下跌，一句暧昧称呼会让价格上涨，一次吵架会形成下探，一次解释和修复会把价格重新拉回。
 
@@ -58,6 +60,8 @@
 |---|---|---|---|
 | [**WeFlow**](https://github.com/hicccc77/WeFlow) | 9.1k | TypeScript / Electron | 本地微信聊天记录导出 + 年度报告应用，桌面 GUI |
 | [**WeChatDataAnalysis**](https://github.com/LifeArchiveProject/WeChatDataAnalysis) | 1.1k | Python | 微信 4.x 数据解密、高仿微信界面，支持导出聊天记录、朋友圈、年度总结等 |
+
+> ⚠️ **导出时请选 CSV，不要选 JSON**。MemoTrace 等工具的 JSON 导出是 LLM 微调格式（无时间戳），本工具无法处理；CSV 才包含完整的发送者 / 时间戳 / 消息内容。
 
 > 其他可用工具：pywxdump、Memotrace 等。**任何能产出"两个人对话表"的工具都行**——只要列里有发送者、时间戳、消息内容三样。
 
@@ -156,8 +160,14 @@ python -m relationship_candlestick.cli serve
 
 支持 **CSV / JSON / TXT**：
 
+> ⚠️ **强烈推荐使用 CSV**。MemoTrace、pywxdump 等工具的 JSON 导出是给 LLM 微调用的格式（一组 `{"conversations": [{role, content}]}`，**没有时间戳**），本工具无法将其转成 K 线，会直接报错并提示你改用 CSV。
+
 - **CSV**（推荐）：微信导出 CSV、pywxdump、Memotrace 等都能识别
-- **JSON**：数组，每条 `{timestamp, sender, message}`
+- **JSON**：必须**带时间戳**。支持以下形式：
+  - 顶层数组：`[{timestamp, sender, message}, ...]`
+  - 包壳对象：`{"messages": [...]}` / `{"data": [...]}` / `{"chat": [...]}` 等
+  - JSONL（每行一个对象）
+  - 字段别名：`ts` / `time` / `StrTime` → timestamp；`from` / `user` / `talker` → sender；`text` / `content` / `StrContent` → message
 - **TXT**：每行 `YYYY-MM-DD HH:MM[:SS] sender: message`
 
 `examples/` 下有三种格式的合成示例可参考。

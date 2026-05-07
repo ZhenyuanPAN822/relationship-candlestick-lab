@@ -13,6 +13,8 @@ thread scores via Anthropic API and streams progress.
 """
 from __future__ import annotations
 
+import hashlib
+import os
 import threading
 import traceback
 import uuid
@@ -72,6 +74,7 @@ class Job:
 
 
 JOBS: Dict[str, Job] = {}
+_CREATE_JOB_LOCK = threading.Lock()
 
 
 # ─── request models ───────────────────────────────────────────────
@@ -94,6 +97,7 @@ class JobRequest(BaseModel):
     calendar_mode: str = "active-only"
     concurrency: int = 5
     gap_min:     int = 10
+    timeout:     float = 300.0      # per-HTTP-request timeout in seconds
 
 
 # ─── job worker ───────────────────────────────────────────────────
@@ -158,6 +162,7 @@ def _run_job(job: Job, req: JobRequest):
             batch_size=req.batch_size,
             concurrency=req.concurrency,
             gap_min=req.gap_min,
+            timeout=req.timeout,
             progress_cb=_cb,
         )
 
@@ -210,12 +215,89 @@ app.add_middleware(
 )
 
 
+def _resolve_chat_path(raw: str) -> Path:
+    """Apply the same chat-path resolution that `_run_job` does, but eagerly,
+    so we can stat the file before computing a stable jid.
+
+    Strips surrounding quotes/whitespace; if the path is a directory, picks
+    a single .csv/.json/.txt file inside (errors if 0 or >1 candidates).
+    """
+    s = raw.strip().strip('"').strip("'")
+    p = Path(s)
+    if not p.exists():
+        raise HTTPException(400, f"chat_path not found: {p}")
+    p = p.resolve()
+    if p.is_dir():
+        cands = sorted(
+            x for x in p.iterdir()
+            if x.suffix.lower() in {".csv", ".json", ".txt"}
+        )
+        if not cands:
+            raise HTTPException(400, f"{p} 是目录，但里面没找到 .csv / .json / .txt 文件")
+        if len(cands) > 1:
+            names = ", ".join(x.name for x in cands)
+            raise HTTPException(400, f"{p} 里有多个候选文件 [{names}]，请填写完整文件路径")
+        p = cands[0]
+    return p
+
+
+def _compute_stable_jid(req: JobRequest, chat_path: Path) -> str:
+    """Deterministic 12-char job id derived from inputs that affect the score
+    output. Two runs that hash to the same jid share a work_dir, which is what
+    enables resume-from-checkpoint across submissions.
+
+    Hash includes:
+      * chat file fingerprint: normalized path + size + mtime (catches content
+        changes without paying a full SHA over a big file)
+      * api_format / provider / model / base_url (different model = different
+        scores, must not contaminate)
+      * gap_min (changes turn boundaries, hence turn_id assignments)
+
+    Hash deliberately excludes:
+      * api_key (rotating key shouldn't invalidate progress, and keys must
+        not appear in any disk path)
+      * batch_size / concurrency / timeout (perf knobs, output is identical)
+      * initial_index / calendar_mode (post-scoring aggregation only)
+    """
+    try:
+        st = chat_path.stat()
+    except OSError as e:
+        raise HTTPException(400, f"could not stat chat file {chat_path}: {e}")
+    parts = [
+        os.path.normcase(str(chat_path)),
+        str(st.st_size),
+        str(int(st.st_mtime)),
+        req.api_format or "",
+        req.provider or "",
+        req.model or "",
+        req.base_url or "",
+        str(req.gap_min),
+    ]
+    key = "\x00".join(parts).encode("utf-8")
+    return hashlib.sha256(key).hexdigest()[:12]
+
+
 @app.post("/api/jobs")
 def create_job(req: JobRequest):
-    jid = uuid.uuid4().hex[:12]
-    job = Job(jid)
-    job.params = req.model_dump(exclude={"api_key"})
-    JOBS[jid] = job
+    # Skill mode does no scoring server-side, so checkpoint-resume doesn't
+    # apply — keep its original uuid behaviour.
+    if req.scorer == "skill":
+        jid = uuid.uuid4().hex[:12]
+    else:
+        jid = _compute_stable_jid(req, _resolve_chat_path(req.chat_path))
+
+    # Hold the lock across the registry check + write so two concurrent
+    # submits with the same jid can't both pass the "no existing job" gate
+    # and double-spawn workers that would race on the same checkpoint.
+    with _CREATE_JOB_LOCK:
+        if req.scorer != "skill":
+            existing = JOBS.get(jid)
+            if existing is not None and existing.status in {"created", "running"}:
+                return existing.to_dict()
+        job = Job(jid)
+        job.params = req.model_dump(exclude={"api_key"})
+        JOBS[jid] = job
+
     th = threading.Thread(target=_run_job, args=(job, req), daemon=True)
     th.start()
     return job.to_dict()
