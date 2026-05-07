@@ -56,6 +56,19 @@ def test_parse_csv_missing_cols(tmp_path):
         parse(p)
 
 
+def test_parse_csv_gbk(tmp_path):
+    p = tmp_path / "gbk.csv"
+    p.write_bytes(
+        ("id,MsgSvrID,type_name,is_sender,talker,msg,src,CreateTime\n"
+         "1,1001,文本,1,abc,你今天在干嘛,,2025-03-01 14:23:11\n"
+         "2,1002,文本,0,小红,在写代码,,2025-03-01 14:24:00\n"
+        ).encode("gb18030")
+    )
+    df = parse(p)
+    assert len(df) == 2
+    assert df.iloc[1]["message"] == "在写代码"
+
+
 def test_parse_txt_bad(tmp_path):
     p = tmp_path / "bad.txt"
     p.write_text("this is not a chat line\n", encoding="utf-8")
